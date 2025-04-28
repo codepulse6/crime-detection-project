@@ -1,129 +1,244 @@
-import urllib.request
-import urllib.parse
+import requests
 import json
-from html.parser import HTMLParser
+import csv
+from datetime import datetime, timedelta
+import time
+from pathlib import Path
+from bs4 import BeautifulSoup
+import pytz
 
-# ---------------------- Reddit Fetcher -------------------------
+# ---------------------- Configuration --------------------------
+CONFIG = {
+    "storage": {
+        "output_dir": "crime_news_data",
+        "twitter_file": "twitter_posts.csv",
+        "facebook_file": "facebook_posts.csv",
+        "instagram_file": "instagram_posts.csv"
+    },
+    "keywords": ["crime", "murder", "theft", "robbery", "shooting", "arrest", "police"],
+    "timezone": "UTC"
+}
 
-class RedditCrimeFetcher:
+# ---------------------- Data Storage ---------------------------
+class DataStorage:
     def __init__(self):
-        self.base_url = "https://www.reddit.com/r/news/search.json"
+        self.output_dir = Path(CONFIG["storage"]["output_dir"])
+        self.output_dir.mkdir(exist_ok=True)
+        
+    def save_to_csv(self, platform, data):
+        filename = CONFIG["storage"][f"{platform}_file"]
+        filepath = self.output_dir / filename
+        fieldnames = ["platform", "content", "url", "date", "author"]
+        
+        file_exists = filepath.exists()
+        
+        with open(filepath, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerows(data)
 
-    def fetch_crime_posts(self, query, limit=10):
-        """
-        Fetch crime-related posts from Reddit's r/news subreddit.
-        """
-        headers = {
+# ---------------------- Social Media Scrapers -----------------
+class TwitterScraper:
+    def __init__(self):
+        self.base_url = "https://twitter.com/search"
+        self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         }
+        self.storage = DataStorage()
+
+    def fetch_posts(self, query, days_back=30):
+        end_date = datetime.now(pytz.timezone(CONFIG["timezone"]))
+        start_date = end_date - timedelta(days=days_back)
+        
+        params = {
+            "q": f"{query} since:{start_date.strftime('%Y-%m-%d')} until:{end_date.strftime('%Y-%m-%d')}",
+            "src": "typed_query"
+        }
+        
+        try:
+            response = requests.get(self.base_url, params=params, headers=self.headers)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            tweets = []
+            for tweet in soup.find_all('div', {'data-testid': 'tweet'}):
+                content = tweet.find('div', {'data-testid': 'tweetText'}).text
+                author = tweet.find('div', {'data-testid': 'User-Names'}).text.split('@')[0].strip()
+                date = tweet.find('time')['datetime']
+                url = f"https://twitter.com{tweet.find('a')['href']}"
+                
+                if any(keyword.lower() in content.lower() for keyword in CONFIG["keywords"]):
+                    tweets.append({
+                        "platform": "twitter",
+                        "content": content,
+                        "url": url,
+                        "date": date,
+                        "author": author
+                    })
+            
+            self.storage.save_to_csv("twitter", tweets)
+            return tweets
+            
+        except Exception as e:
+            print(f"[Twitter] Error: {str(e)}")
+            return []
+
+class FacebookScraper:
+    def __init__(self):
+        self.base_url = "https://www.facebook.com/search/posts"
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+        self.storage = DataStorage()
+
+    def fetch_posts(self, query, days_back=30):
+        end_date = datetime.now(pytz.timezone(CONFIG["timezone"]))
+        start_date = end_date - timedelta(days=days_back)
+        
         params = {
             "q": query,
-            "restrict_sr": "on",
-            "sort": "new",
-            "limit": limit
+            "filters": f"eyJycF9jcmVhdGlvbl90aW1lOjAiOiJ7XCJuYW1lXCI6XCJjcmVhdGlvbl90aW1lXCIsXCJhcmdzXCI6XCJ7XFxcInN0YXJ0X3llYXJcXFwiOlxcXCJ{start_date.year}\\\\\\\"{start_date.month:02d}\\\\\\\"{start_date.day:02d}\\\\\\\"T00\\\\\\\\:00\\\\\\\\:00\\\\\\\",XFxcImVuZF95ZWFyXFxcIjpcXFwie2VuZF95ZWFyfVxcXCJ9XCJ9In0="
         }
-        query_string = urllib.parse.urlencode(params)
-        url = f"{self.base_url}?{query_string}"
-
-        request = urllib.request.Request(url, headers=headers)
+        
         try:
-            with urllib.request.urlopen(request) as response:
-                data = json.loads(response.read().decode())
-                posts = []
-                for child in data["data"]["children"]:
-                    post_data = child["data"]
+            response = requests.get(self.base_url, params=params, headers=self.headers)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            posts = []
+            for post in soup.find_all('div', {'role': 'article'}):
+                content = post.find('div', {'data-ad-preview': 'message'}).text
+                author = post.find('a', {'role': 'link'}).text
+                date = post.find('abbr').text
+                url = post.find('a', {'role': 'link'})['href']
+                
+                if any(keyword.lower() in content.lower() for keyword in CONFIG["keywords"]):
                     posts.append({
-                        "title": post_data["title"],
-                        "url": post_data["url"]
+                        "platform": "facebook",
+                        "content": content,
+                        "url": url,
+                        "date": date,
+                        "author": author
                     })
-                return posts
+            
+            self.storage.save_to_csv("facebook", posts)
+            return posts
+            
         except Exception as e:
-            print(f"Error fetching Reddit posts: {e}")
+            print(f"[Facebook] Error: {str(e)}")
             return []
 
-# --------------------- News Website Scraper --------------------
-
-class SimpleHTMLParser(HTMLParser):
-    """
-    A very simple HTML parser to extract news headlines.
-    """
-
+class InstagramScraper:
     def __init__(self):
-        super().__init__()
-        self.recording = False
-        self.headlines = []
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        if tag == "a" and "gs-c-promo-heading" in attrs.get("class", ""):
-            self.recording = True
-
-    def handle_endtag(self, tag):
-        if self.recording and tag == "a":
-            self.recording = False
-
-    def handle_data(self, data):
-        if self.recording:
-            headline = data.strip()
-            if headline:
-                self.headlines.append(headline)
-
-class BBCNewsScraper:
-    def __init__(self):
-        self.url = "https://www.bbc.com/news"
-
-    def fetch_crime_headlines(self):
-        """
-        Scrapes crime-related headlines from BBC News homepage.
-        """
-        headers = {
+        self.base_url = "https://www.instagram.com/explore/tags"
+        self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         }
-        request = urllib.request.Request(self.url, headers=headers)
+        self.storage = DataStorage()
+
+    def fetch_posts(self, query, days_back=30):
         try:
-            with urllib.request.urlopen(request) as response:
-                html = response.read().decode()
-                parser = SimpleHTMLParser()
-                parser.feed(html)
-                # Just filter manually for crime words (basic filtering)
-                crime_keywords = ["crime", "murder", "theft", "attack", "police"]
-                crime_headlines = [headline for headline in parser.headlines
-                                   if any(word in headline.lower() for word in crime_keywords)]
-                return crime_headlines
+            url = f"{self.base_url}/{query}/"
+            response = requests.get(url, headers=self.headers)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            posts = []
+            for post in soup.find_all('div', {'class': 'v1Nh3'}):
+                content = post.find('img')['alt']
+                url = f"https://www.instagram.com{post.find('a')['href']}"
+                date = datetime.now().strftime('%Y-%m-%d')
+                
+                if any(keyword.lower() in content.lower() for keyword in CONFIG["keywords"]):
+                    posts.append({
+                        "platform": "instagram",
+                        "content": content,
+                        "url": url,
+                        "date": date,
+                        "author": "unknown"
+                    })
+            
+            self.storage.save_to_csv("instagram", posts)
+            return posts
+            
         except Exception as e:
-            print(f"Error scraping BBC News: {e}")
+            print(f"[Instagram] Error: {str(e)}")
             return []
 
-# --------------------------- Chat Box --------------------------
+# ---------------------- Chat Interface -------------------------
+class CrimeNewsChat:
+    def __init__(self):
+        self.twitter = TwitterScraper()
+        self.facebook = FacebookScraper()
+        self.instagram = InstagramScraper()
+        self.storage = DataStorage()
+        
+    def filter_by_year(self, data, start_year, end_year):
+        filtered = []
+        current_year = datetime.now().year
+        
+        for item in data:
+            try:
+                if 'date' in item:
+                    if isinstance(item['date'], str):
+                        date_str = item['date'].split('T')[0]
+                        item_year = int(date_str.split('-')[0])
+                    else:
+                        item_year = current_year
+                    
+                    if start_year <= item_year <= end_year:
+                        filtered.append(item)
+            except:
+                continue
+                
+        return filtered
+        
+    def run(self):
+        print("=== Crime News Collector ===")
+        print("Collects crime-related posts from Twitter, Facebook, and Instagram\n")
+        
+        while True:
+            try:
+                start_year = int(input("Enter start year (e.g., 2020): "))
+                end_year = int(input("Enter end year (e.g., 2023): "))
+                
+                if start_year > end_year:
+                    print("Start year must be before end year. Try again.\n")
+                    continue
+                    
+                print(f"\nFetching crime news from {start_year} to {end_year}...")
+                
+                # Fetch data from all platforms
+                print("\n[1/3] Fetching Twitter posts...")
+                twitter_data = self.twitter.fetch_posts("crime", days_back=(datetime.now().year - start_year) * 365)
+                
+                print("[2/3] Fetching Facebook posts...")
+                facebook_data = self.facebook.fetch_posts("crime", days_back=(datetime.now().year - start_year) * 365)
+                
+                print("[3/3] Fetching Instagram posts...")
+                instagram_data = self.instagram.fetch_posts("crime", days_back=(datetime.now().year - start_year) * 365)
+                
+                # Combine and filter data
+                all_data = twitter_data + facebook_data + instagram_data
+                filtered_data = self.filter_by_year(all_data, start_year, end_year)
+                
+                # Display results
+                print(f"\n=== Results ({len(filtered_data)} posts found) ===")
+                for idx, post in enumerate(filtered_data[:20], 1):  # Show first 20 results
+                    print(f"\n[{idx}] {post['platform'].upper()}")
+                    print(f"Author: {post.get('author', 'Unknown')}")
+                    print(f"Date: {post.get('date', 'Unknown')}")
+                    print(f"Content: {post['content'][:200]}...")
+                    print(f"URL: {post['url']}")
+                
+                print("\nData has been saved to CSV files in the 'crime_news_data' folder.")
+                break
+                
+            except ValueError:
+                print("Please enter valid years (numbers only).\n")
+            except Exception as e:
+                print(f"An error occurred: {str(e)}")
+                break
 
-def chat_box():
-    print("=== Crime Fetcher App ===")
-
-    start_year = input("Enter start year: ")
-    end_year = input("Enter end year: ")
-
-    # For now, year range is not deeply used because Reddit API and BBC News fetch current posts.
-    print(f"\nFetching crime posts between {start_year} and {end_year}...\n")
-
-    reddit_fetcher = RedditCrimeFetcher()
-    bbc_scraper = BBCNewsScraper()
-
-    reddit_posts = reddit_fetcher.fetch_crime_posts("crime", limit=5)
-    bbc_headlines = bbc_scraper.fetch_crime_headlines()
-
-    print("\n--- Reddit Crime Posts ---")
-    if reddit_posts:
-        for post in reddit_posts:
-            print(f"Title: {post['title']}\nLink: {post['url']}\n")
-    else:
-        print("No Reddit posts found.")
-
-    print("\n--- BBC Crime Headlines ---")
-    if bbc_headlines:
-        for headline in bbc_headlines:
-            print(f"- {headline}")
-    else:
-        print("No crime headlines found.")
-
+# ---------------------- Main Execution -------------------------
 if __name__ == "__main__":
-    chat_box()
+    chat = CrimeNewsChat()
+    chat.run()
