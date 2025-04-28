@@ -1,169 +1,90 @@
-import requests
-from bs4 import BeautifulSoup
+import urllib.request
+import urllib.parse
 import csv
-from datetime import datetime, timedelta
-from pathlib import Path
-import pytz
+from datetime import datetime
+import json
+from html.parser import HTMLParser
+import sys
 
 # ====================== CONFIGURATION ======================
 CONFIG = {
-    "keywords": ["crime", "murder", "robbery", "shooting", "arrest", "police"],
-    "timezone": "UTC",
-    "output_dir": "crime_news_data",
-    "max_posts": 50  # Limit posts per platform
+    "keywords": ["crime", "murder", "robbery", "shooting"],
+    "max_posts": 5  # Very small limit for online compilers
 }
 
-# ====================== DATA STORAGE ======================
-class DataStorage:
+# ====================== SIMPLE HTML PARSER ======================
+class SimpleHTMLParser(HTMLParser):
     def __init__(self):
-        self.output_dir = Path(CONFIG["output_dir"])
-        self.output_dir.mkdir(exist_ok=True)
-
-    def save_to_csv(self, platform, data):
-        filename = f"{platform}_posts.csv"
-        filepath = self.output_dir / filename
-        fieldnames = ["platform", "content", "url", "date", "author"]
-
-        with open(filepath, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(data)
-
-# ====================== SOCIAL MEDIA SCRAPERS ======================
-class TwitterScraper:
-    def __init__(self):
-        self.base_url = "https://twitter.com/search"
-        self.headers = {"User-Agent": "Mozilla/5.0"}
-
-    def fetch_posts(self, query, max_posts=CONFIG["max_posts"]):
-        try:
-            params = {"q": f"{query} filter:safe", "src": "typed_query"}
-            response = requests.get(self.base_url, params=params, headers=self.headers, timeout=10)
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            tweets = []
-            for tweet in soup.find_all("div", {"data-testid": "tweet"})[:max_posts]:
-                content = tweet.find("div", {"data-testid": "tweetText"}).get_text(strip=True)
-                author = tweet.find("div", {"data-testid": "User-Names"}).get_text(strip=True).split("@")[0]
-                date = tweet.find("time")["datetime"] if tweet.find("time") else datetime.now().isoformat()
-                url = f"https://twitter.com{tweet.find('a')['href']}"
-                
-                if any(keyword.lower() in content.lower() for keyword in CONFIG["keywords"]):
-                    tweets.append({
-                        "platform": "twitter",
-                        "content": content,
-                        "url": url,
-                        "date": date,
-                        "author": author
-                    })
-            return tweets
-        except Exception as e:
-            print(f"[Twitter Error] {e}")
-            return []
-
-class FacebookScraper:
-    def __init__(self):
-        self.base_url = "https://www.facebook.com/search/posts"
-        self.headers = {"User-Agent": "Mozilla/5.0"}
-
-    def fetch_posts(self, query, max_posts=CONFIG["max_posts"]):
-        try:
-            params = {"q": query}
-            response = requests.get(self.base_url, params=params, headers=self.headers, timeout=10)
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            posts = []
-            for post in soup.find_all("div", {"role": "article"})[:max_posts]:
-                content = post.get_text(strip=True)
-                author = post.find("a", {"role": "link"}).get_text(strip=True)
-                date = datetime.now().isoformat()  # Facebook doesn't expose dates easily
-                url = post.find("a", {"role": "link"})["href"]
-                
-                if any(keyword.lower() in content.lower() for keyword in CONFIG["keywords"]):
-                    posts.append({
-                        "platform": "facebook",
-                        "content": content,
-                        "url": url,
-                        "date": date,
-                        "author": author
-                    })
-            return posts
-        except Exception as e:
-            print(f"[Facebook Error] {e}")
-            return []
-
-class InstagramScraper:
-    def __init__(self):
-        self.base_url = "https://www.instagram.com/explore/tags"
-        self.headers = {"User-Agent": "Mozilla/5.0"}
-
-    def fetch_posts(self, query, max_posts=CONFIG["max_posts"]):
-        try:
-            url = f"{self.base_url}/{query}/"
-            response = requests.get(url, headers=self.headers, timeout=10)
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            posts = []
-            for post in soup.find_all("div", {"class": "v1Nh3"})[:max_posts]:
-                content = post.find("img")["alt"] if post.find("img") else "No description"
-                url = f"https://www.instagram.com{post.find('a')['href']}"
-                date = datetime.now().isoformat()  # Instagram doesn't expose dates easily
-                author = "unknown"
-                
-                if any(keyword.lower() in content.lower() for keyword in CONFIG["keywords"]):
-                    posts.append({
-                        "platform": "instagram",
-                        "content": content,
-                        "url": url,
-                        "date": date,
-                        "author": author
-                    })
-            return posts
-        except Exception as e:
-            print(f"[Instagram Error] {e}")
-            return []
-
-# ====================== CHAT INTERFACE ======================
-def chat_interface():
-    print("=== Crime News Collector ===")
-    print("Enter year range to filter crime news (e.g., 2020-2023)\n")
+        super().__init__()
+        self.links = []
     
-    while True:
-        try:
-            start_year = int(input("Start Year (e.g., 2020): "))
-            end_year = int(input("End Year (e.g., 2023): "))
-            
-            if start_year > end_year:
-                print("❌ Start year must be before end year. Try again.")
-                continue
-            
-            print("\n🔍 Fetching crime news...")
-            
-            # Fetch data
-            twitter_data = TwitterScraper().fetch_posts("crime")
-            facebook_data = FacebookScraper().fetch_posts("crime")
-            instagram_data = InstagramScraper().fetch_posts("crime")
-            
-            # Combine and filter
-            all_data = twitter_data + facebook_data + instagram_data
-            
-            # Save to CSV
-            storage = DataStorage()
-            storage.save_to_csv("twitter", twitter_data)
-            storage.save_to_csv("facebook", facebook_data)
-            storage.save_to_csv("instagram", instagram_data)
-            
-            # Display results
-            print(f"\n✅ Found {len(all_data)} crime-related posts!")
-            print(f"📂 Data saved in: '{CONFIG['output_dir']}' folder.")
-            break
-            
-        except ValueError:
-            print("❌ Invalid input. Please enter numbers only.")
-        except Exception as e:
-            print(f"❌ An error occurred: {e}")
-            break
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            attrs = dict(attrs)
+            if "href" in attrs:
+                self.links.append(attrs["href"])
 
-# ====================== MAIN EXECUTION ======================
+# ====================== NEWS SCRAPER (NO DEPENDENCIES) ======================
+class NewsScraper:
+    @staticmethod
+    def fetch_google_news(query):
+        try:
+            url = f"https://news.google.com/search?q={urllib.parse.quote(query)}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            
+            with urllib.request.urlopen(req, timeout=10) as response:
+                html = response.read().decode()
+                parser = SimpleHTMLParser()
+                parser.feed(html)
+                
+                # Filter for actual news links
+                news_links = [link for link in parser.links 
+                             if link.startswith("./articles/")]
+                
+                # Get first few results
+                results = []
+                base_url = "https://news.google.com"
+                for link in news_links[:CONFIG["max_posts"]]:
+                    full_url = base_url + link[1:]
+                    title = link.split("=")[-1].replace("+", " ")
+                    if any(kw.lower() in title.lower() for kw in CONFIG["keywords"]):
+                        results.append({
+                            "title": title,
+                            "url": full_url,
+                            "source": "Google News"
+                        })
+                return results
+                
+        except Exception as e:
+            print(f"[Error] Could not fetch news: {e}")
+            return []
+
+# ====================== MAIN APP ======================
+def main():
+    print("=== Crime News Finder ===")
+    print("(Using built-in libraries only)\n")
+    
+    try:
+        # Simple year input (for demonstration)
+        start_year = input("Enter start year (e.g. 2020): ")
+        end_year = input("Enter end year (e.g. 2023): ")
+        
+        print(f"\nSearching for crime news...")
+        
+        # Fetch news
+        news = NewsScraper.fetch_google_news("crime")
+        
+        # Display results
+        print(f"\nFound {len(news)} relevant news items:")
+        for idx, item in enumerate(news, 1):
+            print(f"\n{idx}. {item['title']}")
+            print(f"   Source: {item['source']}")
+            print(f"   URL: {item['url']}")
+            
+        print("\nNote: Online compilers may block web requests.")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+
 if __name__ == "__main__":
-    chat_interface()
+    main()
