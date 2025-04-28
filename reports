@@ -1,44 +1,129 @@
 import urllib.request
 import urllib.parse
 import json
-from datetime import datetime
+from html.parser import HTMLParser
 
-# Twitter API Setup (replace with your actual token)
-TWITTER_BEARER_TOKEN = 'your_twitter_bearer_token'
+# ---------------------- Reddit Fetcher -------------------------
 
-def fetch_twitter_crime_posts(start_year, end_year):
-    query = urllib.parse.quote("crime OR theft OR attack OR murder")
-    url = f"https://api.twitter.com/2/tweets/search/recent?query={query}&max_results=10"
+class RedditCrimeFetcher:
+    def __init__(self):
+        self.base_url = "https://www.reddit.com/r/news/search.json"
 
-    headers = {
-        "Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"
-    }
+    def fetch_crime_posts(self, query, limit=10):
+        """
+        Fetch crime-related posts from Reddit's r/news subreddit.
+        """
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+        params = {
+            "q": query,
+            "restrict_sr": "on",
+            "sort": "new",
+            "limit": limit
+        }
+        query_string = urllib.parse.urlencode(params)
+        url = f"{self.base_url}?{query_string}"
 
-    request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request) as response:
-        data = json.loads(response.read().decode())
-        tweets = []
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request) as response:
+                data = json.loads(response.read().decode())
+                posts = []
+                for child in data["data"]["children"]:
+                    post_data = child["data"]
+                    posts.append({
+                        "title": post_data["title"],
+                        "url": post_data["url"]
+                    })
+                return posts
+        except Exception as e:
+            print(f"Error fetching Reddit posts: {e}")
+            return []
 
-        if 'data' in data:
-            for tweet in data['data']:
-                tweets.append({
-                    'text': tweet['text'],
-                    'id': tweet['id']
-                })
-        return tweets
+# --------------------- News Website Scraper --------------------
+
+class SimpleHTMLParser(HTMLParser):
+    """
+    A very simple HTML parser to extract news headlines.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.recording = False
+        self.headlines = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "a" and "gs-c-promo-heading" in attrs.get("class", ""):
+            self.recording = True
+
+    def handle_endtag(self, tag):
+        if self.recording and tag == "a":
+            self.recording = False
+
+    def handle_data(self, data):
+        if self.recording:
+            headline = data.strip()
+            if headline:
+                self.headlines.append(headline)
+
+class BBCNewsScraper:
+    def __init__(self):
+        self.url = "https://www.bbc.com/news"
+
+    def fetch_crime_headlines(self):
+        """
+        Scrapes crime-related headlines from BBC News homepage.
+        """
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+        request = urllib.request.Request(self.url, headers=headers)
+        try:
+            with urllib.request.urlopen(request) as response:
+                html = response.read().decode()
+                parser = SimpleHTMLParser()
+                parser.feed(html)
+                # Just filter manually for crime words (basic filtering)
+                crime_keywords = ["crime", "murder", "theft", "attack", "police"]
+                crime_headlines = [headline for headline in parser.headlines
+                                   if any(word in headline.lower() for word in crime_keywords)]
+                return crime_headlines
+        except Exception as e:
+            print(f"Error scraping BBC News: {e}")
+            return []
+
+# --------------------------- Chat Box --------------------------
 
 def chat_box():
-    print("Welcome to the Crime Post Fetcher (No 3rd Party Library Version)!")
-    year_range = input("Enter the year range (example: 2019 to 2021): ")
-    start_year, end_year = map(int, year_range.split("to"))
+    print("=== Crime Fetcher App ===")
 
-    print("\nFetching Twitter posts...")
-    twitter_posts = fetch_twitter_crime_posts(start_year, end_year)
-    print(f"Found {len(twitter_posts)} Twitter posts.")
+    start_year = input("Enter start year: ")
+    end_year = input("Enter end year: ")
 
-    # Display results
-    for post in twitter_posts:
-        print(f"- {post['text']} (Tweet ID: {post['id']})")
+    # For now, year range is not deeply used because Reddit API and BBC News fetch current posts.
+    print(f"\nFetching crime posts between {start_year} and {end_year}...\n")
+
+    reddit_fetcher = RedditCrimeFetcher()
+    bbc_scraper = BBCNewsScraper()
+
+    reddit_posts = reddit_fetcher.fetch_crime_posts("crime", limit=5)
+    bbc_headlines = bbc_scraper.fetch_crime_headlines()
+
+    print("\n--- Reddit Crime Posts ---")
+    if reddit_posts:
+        for post in reddit_posts:
+            print(f"Title: {post['title']}\nLink: {post['url']}\n")
+    else:
+        print("No Reddit posts found.")
+
+    print("\n--- BBC Crime Headlines ---")
+    if bbc_headlines:
+        for headline in bbc_headlines:
+            print(f"- {headline}")
+    else:
+        print("No crime headlines found.")
 
 if __name__ == "__main__":
     chat_box()
