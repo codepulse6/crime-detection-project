@@ -1,70 +1,51 @@
 import requests
-import json
+from bs4 import BeautifulSoup
 import csv
 from datetime import datetime, timedelta
-import time
 from pathlib import Path
-from bs4 import BeautifulSoup
 import pytz
 
-# ---------------------- Configuration --------------------------
+# ====================== CONFIGURATION ======================
 CONFIG = {
-    "storage": {
-        "output_dir": "crime_news_data",
-        "twitter_file": "twitter_posts.csv",
-        "facebook_file": "facebook_posts.csv",
-        "instagram_file": "instagram_posts.csv"
-    },
-    "keywords": ["crime", "murder", "theft", "robbery", "shooting", "arrest", "police"],
-    "timezone": "UTC"
+    "keywords": ["crime", "murder", "robbery", "shooting", "arrest", "police"],
+    "timezone": "UTC",
+    "output_dir": "crime_news_data",
+    "max_posts": 50  # Limit posts per platform
 }
 
-# ---------------------- Data Storage ---------------------------
+# ====================== DATA STORAGE ======================
 class DataStorage:
     def __init__(self):
-        self.output_dir = Path(CONFIG["storage"]["output_dir"])
+        self.output_dir = Path(CONFIG["output_dir"])
         self.output_dir.mkdir(exist_ok=True)
-        
+
     def save_to_csv(self, platform, data):
-        filename = CONFIG["storage"][f"{platform}_file"]
+        filename = f"{platform}_posts.csv"
         filepath = self.output_dir / filename
         fieldnames = ["platform", "content", "url", "date", "author"]
-        
-        file_exists = filepath.exists()
-        
-        with open(filepath, 'a', newline='', encoding='utf-8') as f:
+
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
-            if not file_exists:
-                writer.writeheader()
+            writer.writeheader()
             writer.writerows(data)
 
-# ---------------------- Social Media Scrapers -----------------
+# ====================== SOCIAL MEDIA SCRAPERS ======================
 class TwitterScraper:
     def __init__(self):
         self.base_url = "https://twitter.com/search"
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        }
-        self.storage = DataStorage()
+        self.headers = {"User-Agent": "Mozilla/5.0"}
 
-    def fetch_posts(self, query, days_back=30):
-        end_date = datetime.now(pytz.timezone(CONFIG["timezone"]))
-        start_date = end_date - timedelta(days=days_back)
-        
-        params = {
-            "q": f"{query} since:{start_date.strftime('%Y-%m-%d')} until:{end_date.strftime('%Y-%m-%d')}",
-            "src": "typed_query"
-        }
-        
+    def fetch_posts(self, query, max_posts=CONFIG["max_posts"]):
         try:
-            response = requests.get(self.base_url, params=params, headers=self.headers)
-            soup = BeautifulSoup(response.text, 'html.parser')
+            params = {"q": f"{query} filter:safe", "src": "typed_query"}
+            response = requests.get(self.base_url, params=params, headers=self.headers, timeout=10)
+            soup = BeautifulSoup(response.text, "html.parser")
             
             tweets = []
-            for tweet in soup.find_all('div', {'data-testid': 'tweet'}):
-                content = tweet.find('div', {'data-testid': 'tweetText'}).text
-                author = tweet.find('div', {'data-testid': 'User-Names'}).text.split('@')[0].strip()
-                date = tweet.find('time')['datetime']
+            for tweet in soup.find_all("div", {"data-testid": "tweet"})[:max_posts]:
+                content = tweet.find("div", {"data-testid": "tweetText"}).get_text(strip=True)
+                author = tweet.find("div", {"data-testid": "User-Names"}).get_text(strip=True).split("@")[0]
+                date = tweet.find("time")["datetime"] if tweet.find("time") else datetime.now().isoformat()
                 url = f"https://twitter.com{tweet.find('a')['href']}"
                 
                 if any(keyword.lower() in content.lower() for keyword in CONFIG["keywords"]):
@@ -75,41 +56,28 @@ class TwitterScraper:
                         "date": date,
                         "author": author
                     })
-            
-            self.storage.save_to_csv("twitter", tweets)
             return tweets
-            
         except Exception as e:
-            print(f"[Twitter] Error: {str(e)}")
+            print(f"[Twitter Error] {e}")
             return []
 
 class FacebookScraper:
     def __init__(self):
         self.base_url = "https://www.facebook.com/search/posts"
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        }
-        self.storage = DataStorage()
+        self.headers = {"User-Agent": "Mozilla/5.0"}
 
-    def fetch_posts(self, query, days_back=30):
-        end_date = datetime.now(pytz.timezone(CONFIG["timezone"]))
-        start_date = end_date - timedelta(days=days_back)
-        
-        params = {
-            "q": query,
-            "filters": f"eyJycF9jcmVhdGlvbl90aW1lOjAiOiJ7XCJuYW1lXCI6XCJjcmVhdGlvbl90aW1lXCIsXCJhcmdzXCI6XCJ7XFxcInN0YXJ0X3llYXJcXFwiOlxcXCJ{start_date.year}\\\\\\\"{start_date.month:02d}\\\\\\\"{start_date.day:02d}\\\\\\\"T00\\\\\\\\:00\\\\\\\\:00\\\\\\\",XFxcImVuZF95ZWFyXFxcIjpcXFwie2VuZF95ZWFyfVxcXCJ9XCJ9In0="
-        }
-        
+    def fetch_posts(self, query, max_posts=CONFIG["max_posts"]):
         try:
-            response = requests.get(self.base_url, params=params, headers=self.headers)
-            soup = BeautifulSoup(response.text, 'html.parser')
+            params = {"q": query}
+            response = requests.get(self.base_url, params=params, headers=self.headers, timeout=10)
+            soup = BeautifulSoup(response.text, "html.parser")
             
             posts = []
-            for post in soup.find_all('div', {'role': 'article'}):
-                content = post.find('div', {'data-ad-preview': 'message'}).text
-                author = post.find('a', {'role': 'link'}).text
-                date = post.find('abbr').text
-                url = post.find('a', {'role': 'link'})['href']
+            for post in soup.find_all("div", {"role": "article"})[:max_posts]:
+                content = post.get_text(strip=True)
+                author = post.find("a", {"role": "link"}).get_text(strip=True)
+                date = datetime.now().isoformat()  # Facebook doesn't expose dates easily
+                url = post.find("a", {"role": "link"})["href"]
                 
                 if any(keyword.lower() in content.lower() for keyword in CONFIG["keywords"]):
                     posts.append({
@@ -119,33 +87,28 @@ class FacebookScraper:
                         "date": date,
                         "author": author
                     })
-            
-            self.storage.save_to_csv("facebook", posts)
             return posts
-            
         except Exception as e:
-            print(f"[Facebook] Error: {str(e)}")
+            print(f"[Facebook Error] {e}")
             return []
 
 class InstagramScraper:
     def __init__(self):
         self.base_url = "https://www.instagram.com/explore/tags"
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        }
-        self.storage = DataStorage()
+        self.headers = {"User-Agent": "Mozilla/5.0"}
 
-    def fetch_posts(self, query, days_back=30):
+    def fetch_posts(self, query, max_posts=CONFIG["max_posts"]):
         try:
             url = f"{self.base_url}/{query}/"
-            response = requests.get(url, headers=self.headers)
-            soup = BeautifulSoup(response.text, 'html.parser')
+            response = requests.get(url, headers=self.headers, timeout=10)
+            soup = BeautifulSoup(response.text, "html.parser")
             
             posts = []
-            for post in soup.find_all('div', {'class': 'v1Nh3'}):
-                content = post.find('img')['alt']
+            for post in soup.find_all("div", {"class": "v1Nh3"})[:max_posts]:
+                content = post.find("img")["alt"] if post.find("img") else "No description"
                 url = f"https://www.instagram.com{post.find('a')['href']}"
-                date = datetime.now().strftime('%Y-%m-%d')
+                date = datetime.now().isoformat()  # Instagram doesn't expose dates easily
+                author = "unknown"
                 
                 if any(keyword.lower() in content.lower() for keyword in CONFIG["keywords"]):
                     posts.append({
@@ -153,92 +116,54 @@ class InstagramScraper:
                         "content": content,
                         "url": url,
                         "date": date,
-                        "author": "unknown"
+                        "author": author
                     })
-            
-            self.storage.save_to_csv("instagram", posts)
             return posts
-            
         except Exception as e:
-            print(f"[Instagram] Error: {str(e)}")
+            print(f"[Instagram Error] {e}")
             return []
 
-# ---------------------- Chat Interface -------------------------
-class CrimeNewsChat:
-    def __init__(self):
-        self.twitter = TwitterScraper()
-        self.facebook = FacebookScraper()
-        self.instagram = InstagramScraper()
-        self.storage = DataStorage()
-        
-    def filter_by_year(self, data, start_year, end_year):
-        filtered = []
-        current_year = datetime.now().year
-        
-        for item in data:
-            try:
-                if 'date' in item:
-                    if isinstance(item['date'], str):
-                        date_str = item['date'].split('T')[0]
-                        item_year = int(date_str.split('-')[0])
-                    else:
-                        item_year = current_year
-                    
-                    if start_year <= item_year <= end_year:
-                        filtered.append(item)
-            except:
+# ====================== CHAT INTERFACE ======================
+def chat_interface():
+    print("=== Crime News Collector ===")
+    print("Enter year range to filter crime news (e.g., 2020-2023)\n")
+    
+    while True:
+        try:
+            start_year = int(input("Start Year (e.g., 2020): "))
+            end_year = int(input("End Year (e.g., 2023): "))
+            
+            if start_year > end_year:
+                print("❌ Start year must be before end year. Try again.")
                 continue
-                
-        return filtered
-        
-    def run(self):
-        print("=== Crime News Collector ===")
-        print("Collects crime-related posts from Twitter, Facebook, and Instagram\n")
-        
-        while True:
-            try:
-                start_year = int(input("Enter start year (e.g., 2020): "))
-                end_year = int(input("Enter end year (e.g., 2023): "))
-                
-                if start_year > end_year:
-                    print("Start year must be before end year. Try again.\n")
-                    continue
-                    
-                print(f"\nFetching crime news from {start_year} to {end_year}...")
-                
-                # Fetch data from all platforms
-                print("\n[1/3] Fetching Twitter posts...")
-                twitter_data = self.twitter.fetch_posts("crime", days_back=(datetime.now().year - start_year) * 365)
-                
-                print("[2/3] Fetching Facebook posts...")
-                facebook_data = self.facebook.fetch_posts("crime", days_back=(datetime.now().year - start_year) * 365)
-                
-                print("[3/3] Fetching Instagram posts...")
-                instagram_data = self.instagram.fetch_posts("crime", days_back=(datetime.now().year - start_year) * 365)
-                
-                # Combine and filter data
-                all_data = twitter_data + facebook_data + instagram_data
-                filtered_data = self.filter_by_year(all_data, start_year, end_year)
-                
-                # Display results
-                print(f"\n=== Results ({len(filtered_data)} posts found) ===")
-                for idx, post in enumerate(filtered_data[:20], 1):  # Show first 20 results
-                    print(f"\n[{idx}] {post['platform'].upper()}")
-                    print(f"Author: {post.get('author', 'Unknown')}")
-                    print(f"Date: {post.get('date', 'Unknown')}")
-                    print(f"Content: {post['content'][:200]}...")
-                    print(f"URL: {post['url']}")
-                
-                print("\nData has been saved to CSV files in the 'crime_news_data' folder.")
-                break
-                
-            except ValueError:
-                print("Please enter valid years (numbers only).\n")
-            except Exception as e:
-                print(f"An error occurred: {str(e)}")
-                break
+            
+            print("\n🔍 Fetching crime news...")
+            
+            # Fetch data
+            twitter_data = TwitterScraper().fetch_posts("crime")
+            facebook_data = FacebookScraper().fetch_posts("crime")
+            instagram_data = InstagramScraper().fetch_posts("crime")
+            
+            # Combine and filter
+            all_data = twitter_data + facebook_data + instagram_data
+            
+            # Save to CSV
+            storage = DataStorage()
+            storage.save_to_csv("twitter", twitter_data)
+            storage.save_to_csv("facebook", facebook_data)
+            storage.save_to_csv("instagram", instagram_data)
+            
+            # Display results
+            print(f"\n✅ Found {len(all_data)} crime-related posts!")
+            print(f"📂 Data saved in: '{CONFIG['output_dir']}' folder.")
+            break
+            
+        except ValueError:
+            print("❌ Invalid input. Please enter numbers only.")
+        except Exception as e:
+            print(f"❌ An error occurred: {e}")
+            break
 
-# ---------------------- Main Execution -------------------------
+# ====================== MAIN EXECUTION ======================
 if __name__ == "__main__":
-    chat = CrimeNewsChat()
-    chat.run()
+    chat_interface()
